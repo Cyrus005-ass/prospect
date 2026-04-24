@@ -9,7 +9,5 @@
     envVars:
       - key: PROSPECT_API_KEY
         sync: false
-      - key: GOOGLE_MAPS_API_KEY
-        sync: false
       - key: PYTHON_VERSION
         value: 3.11.9

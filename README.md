@@ -5,14 +5,14 @@ Signature produit: `C-Y ASS`.
 
 ## Fonctions principales
 - Recherche par `query + city + country`
-- Source `google_maps` (par defaut) ou `overpass`
+- Source `overpass` (par defaut, gratuite) ou `google_maps` (optionnelle)
 - Recuperation des contacts dispo: telephone + email (si trouve sur le site web de l'etablissement)
 - Export CSV/XLSX
 - Mini CRM multi-utilisateur via `api_key`
 
 ## API rapide
 - `GET /health`
-- `GET /search?query=restaurant&city=Paris&country=France&source=google_maps&weakness=all&limit=120&api_key=dev-key-change-me`
+- `GET /search?query=restaurant&city=Paris&country=France&source=overpass&weakness=all&limit=120&api_key=dev-key-change-me`
 - `GET /jobs?api_key=dev-key-change-me`
 - `GET /jobs/{job_id}?api_key=dev-key-change-me`
 - `GET /jobs/{job_id}/leads?limit=100&offset=0&priority=HOT&status=contacted&tag=no_website&api_key=dev-key-change-me`
@@ -22,7 +22,7 @@ Signature produit: `C-Y ASS`.
 
 ## Variables d'environnement
 - `PROSPECT_API_KEY=dev-key-change-me`
-- `GOOGLE_MAPS_API_KEY=...`
+- `GOOGLE_MAPS_API_KEY=...` (optionnelle, seulement si tu utilises `source=google_maps`)
 - `PORT=8000`
 
 Copie:
@@ -34,7 +34,7 @@ cp .env.example .env
 ```bash
 pip install -r requirements.txt
 set PROSPECT_API_KEY=dev-key-change-me
-set GOOGLE_MAPS_API_KEY=votre-cle-api-google
+set GOOGLE_MAPS_API_KEY=votre-cle-api-google  # optionnel
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
@@ -43,8 +43,9 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ### Option 1: Render
 1. Push du repo sur GitHub.
 2. Sur Render: New + Blueprint, selectionne `render.yaml`.
-3. Ajoute `PROSPECT_API_KEY` et `GOOGLE_MAPS_API_KEY`.
-4. Deploy.
+3. Ajoute `PROSPECT_API_KEY` (obligatoire).
+4. `GOOGLE_MAPS_API_KEY` est optionnelle (seulement pour `source=google_maps`).
+5. Deploy.
 
 ### Option 2: Railway
 1. Push du repo sur GitHub.

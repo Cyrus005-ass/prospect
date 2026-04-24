@@ -558,6 +558,10 @@ def run_job(job_id: str, owner_api_key: str, query: str, city: str, country: str
         update_job(job_id, status="running", started_utc=now_utc())
     try:
         src = (source or "overpass").strip().lower()
+        if src == "google_maps" and not GOOGLE_MAPS_API_KEY:
+            # Keep the app usable on free deployments when no Google key is configured.
+            src = "overpass"
+            update_job(job_id, source=src)
         if src == "google_maps":
             raw = google_places_fetch(query, city, country, limit)
             leads = [google_to_lead(el, city, country, vertical) for el in raw]
@@ -618,7 +622,7 @@ def search(
     weakness: str = Query("all"),
     limit: int = Query(100, ge=10, le=500),
     vertical: str | None = Query(None),
-    source: str = Query("google_maps"),
+    source: str = Query("overpass"),
     api_key: str | None = Query(None),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> dict[str, Any]:
@@ -628,6 +632,8 @@ def search(
     src = source.strip().lower()
     if src not in {"overpass", "google_maps"}:
         raise HTTPException(status_code=400, detail="source doit etre overpass ou google_maps")
+    if src == "google_maps" and not GOOGLE_MAPS_API_KEY:
+        src = "overpass"
     with db_conn() as conn:
         conn.execute(
             "INSERT INTO jobs(job_id,owner_api_key,status,query,city,country,weakness,limit_n,vertical,source,created_utc) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -735,7 +741,7 @@ def dashboard() -> str:
 </head><body>
 <h2>ProspectHunter V5.1</h2><div class='muted'>Signature: C-Y ASS</div>
 <div class='row'><input id='apikey' value='dev-key-change-me' placeholder='api_key' style='min-width:220px'><span class='muted'>Isolation multi-utilisateur via api_key</span></div>
-<div class='row'><input id='query' value='restaurant'><input id='city' value='Cotonou'><input id='country' value='Benin'><select id='source'><option value='google_maps'>google_maps</option><option value='overpass'>overpass</option></select><select id='weakness'><option value='all'>all</option><option value='no_website'>no_website</option><option value='no_phone'>no_phone</option><option value='no_hours'>no_hours</option><option value='weak_profile'>weak_profile</option></select><input id='limit' type='number' value='120'><button onclick='launch()'>Lancer Job</button></div>
+<div class='row'><input id='query' value='restaurant'><input id='city' value='Cotonou'><input id='country' value='Benin'><select id='source'><option value='overpass'>overpass</option><option value='google_maps'>google_maps</option></select><select id='weakness'><option value='all'>all</option><option value='no_website'>no_website</option><option value='no_phone'>no_phone</option><option value='no_hours'>no_hours</option><option value='weak_profile'>weak_profile</option></select><input id='limit' type='number' value='120'><button onclick='launch()'>Lancer Job</button></div>
 <div class='row'><span class='muted'>Job:</span><span id='jobid' class='mono'>-</span><span id='jobstate' class='muted'>Aucun</span></div>
 <div class='row'><button onclick='refreshLeads()'>Rafraichir</button><select id='fPriority'><option value=''>Priority all</option><option>HOT</option><option>WARM</option><option>COLD</option></select><select id='fStatus'><option value=''>Status all</option><option>new</option><option>contacted</option><option>replied</option><option>closed</option><option>ignored</option></select><select id='fTag'><option value=''>Tag all</option><option>no_website</option><option>no_phone</option><option>no_hours</option><option>weak_profile</option></select></div>
 <table><thead><tr><th>Name</th><th>Priority</th><th>Score</th><th>Status</th><th>Tags</th><th>Phone</th><th>Email</th><th>CRM</th></tr></thead><tbody id='tbody'><tr><td colspan='8' class='muted'>Aucun lead</td></tr></tbody></table>
@@ -748,16 +754,3 @@ async function refreshLeads(){if(!currentJob)return;const qs=new URLSearchParams
 async function setStatus(leadId,status){const note=prompt('Note CRM (optionnel):','')||'';const qs=new URLSearchParams({lead_id:leadId,status:status,note:note});const r=await fetch(auth(`/crm/update?${qs.toString()}`));const j=await r.json();if(!j.ok){alert('Erreur CRM');return;}refreshLeads();}
 </script></body></html>
 """
-
-
-
-
-
-
-
-
-
-
-
-
-
