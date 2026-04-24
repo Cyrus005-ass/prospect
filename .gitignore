@@ -1,0 +1,25 @@
+﻿# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Env
+.env
+
+# Runtime data
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Build artifacts
+build/
+dist/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+data/*.csv
+data/*.xlsx
+data/crm_status.json

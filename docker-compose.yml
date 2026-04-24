@@ -1,0 +1,14 @@
+﻿services:
+  prospect_hunter:
+    build: .
+    container_name: prospect_hunter
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PROSPECT_API_KEY=dev-key-change-me
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
+    restart: unless-stopped
+
+
