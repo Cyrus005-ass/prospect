@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ProspectHunter</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="masthead band">
+      <div>
+        <p class="eyebrow">Prospection locale fullstack</p>
+        <h1>ProspectHunter</h1>
+        <p class="lede">Lancez une recherche Overpass verrouillee par pays, qualifiez les fiches, copiez vos scripts et poussez le suivi CRM depuis une seule interface web deployable.</p>
+      </div>
+      <div class="masthead-side">
+        <div class="status-line">
+          <span class="dot" id="jobDot"></span>
+          <strong id="jobState">Aucun job selectionne</strong>
+        </div>
+        <div class="meta-block">
+          <span class="meta-label">Job actif</span>
+          <span class="mono" id="jobRef">-</span>
+        </div>
+        <div class="meta-block">
+          <span class="meta-label">API key</span>
+          <span class="mono" id="apiPreview">dev-key-change-me</span>
+        </div>
+        <div class="notice" id="noticeBox">Pret a lancer une recherche.</div>
+      </div>
+    </section>
+
+    <section class="stats-grid">
+      <article class="stat band">
+        <span class="stat-label">Leads visibles</span>
+        <strong class="stat-value" id="metricTotal">0</strong>
+        <span class="stat-note" id="metricTotalNote">Aucun job charge.</span>
+      </article>
+      <article class="stat band">
+        <span class="stat-label">HOT</span>
+        <strong class="stat-value" id="metricHot">0</strong>
+        <span class="stat-note">Leads a traiter en priorite.</span>
+      </article>
+      <article class="stat band">
+        <span class="stat-label">Sans site</span>
+        <strong class="stat-value" id="metricNoWebsite">0</strong>
+        <span class="stat-note">Segment souvent le plus activable.</span>
+      </article>
+      <article class="stat band">
+        <span class="stat-label">CRM suivi</span>
+        <strong class="stat-value" id="metricCrm">0</strong>
+        <span class="stat-note" id="metricCrmNote">Aucune mise a jour CRM.</span>
+      </article>
+    </section>
+
+    <section class="workspace">
+      <aside class="left-rail">
+        <section class="band section-block">
+          <div class="section-head">
+            <div>
+              <h2>Recherche</h2>
+              <p>Saisissez obligatoirement pays, ville et secteur.</p>
+            </div>
+            <span class="pill">Overpass</span>
+          </div>
+
+          <div class="form-stack">
+            <label class="field">
+              <span>API key</span>
+              <input id="apikey" placeholder="api_key" value="dev-key-change-me" autocomplete="off">
+            </label>
+
+            <div class="grid-2">
+              <label class="field">
+                <span>Pays</span>
+                <input id="country" placeholder="France ou FR" value="Benin" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>Ville</span>
+                <input id="city" placeholder="Paris, Cotonou, Montreal" value="Cotonou" autocomplete="off">
+              </label>
+            </div>
+
+            <div class="grid-2">
+              <label class="field">
+                <span>Secteur</span>
+                <input id="query" placeholder="restaurant, hotel, coiffeur" value="restaurant" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>Faiblesse ciblee</span>
+                <select id="weakness">
+                  <option value="all">Toutes les fiches faibles</option>
+                  <option value="no_website">Sans site web</option>
+                  <option value="no_phone">Sans telephone</option>
+                  <option value="no_hours">Sans horaires</option>
+                  <option value="weak_profile">Profil incomplet</option>
+                </select>
+              </label>
+            </div>
+
+            <label class="field">
+              <span>Volume max</span>
+              <input id="limit" type="number" min="10" max="500" value="120">
+            </label>
+
+            <div class="actions-row">
+              <button class="btn btn-primary" id="launchBtn" type="button">Lancer le job</button>
+              <button class="btn" id="refreshJobsBtn" type="button">Rafraichir</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="band section-block jobs-block">
+          <div class="section-head">
+            <div>
+              <h2>Jobs recents</h2>
+              <p>Rechargez un lot, reprenez un suivi ou exportez.</p>
+            </div>
+            <button class="btn btn-soft btn-small" id="syncSummaryBtn" type="button">Sync CRM</button>
+          </div>
+          <div class="job-list" id="jobList">
+            <div class="empty-state">Aucun job enregistre pour cette API key.</div>
+          </div>
+        </section>
+      </aside>
+
+      <section class="main-stage band section-block">
+        <div class="section-head stage-head">
+          <div>
+            <h2>Leads</h2>
+            <p>Filtrez, exportez et qualifiez vos prospects sans quitter la page.</p>
+          </div>
+          <div class="actions-row compact">
+            <a class="btn btn-small" id="csvLink" href="#" aria-disabled="true">CSV</a>
+            <a class="btn btn-small" id="xlsxLink" href="#" aria-disabled="true">XLSX</a>
+            <button class="btn btn-small" id="copyMarkdownBtn" type="button">Copier Markdown</button>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <input class="search-input" id="search" placeholder="Filtrer par nom, ville, tags ou note CRM">
+          <select id="fPriority">
+            <option value="">Priorite: toutes</option>
+            <option value="HOT">HOT</option>
+            <option value="WARM">WARM</option>
+            <option value="COLD">COLD</option>
+          </select>
+          <select id="fStatus">
+            <option value="">Statut: tous</option>
+            <option value="new">new</option>
+            <option value="contacted">contacted</option>
+            <option value="replied">replied</option>
+            <option value="closed">closed</option>
+            <option value="ignored">ignored</option>
+          </select>
+          <select id="fTag">
+            <option value="">Tag: tous</option>
+            <option value="no_website">no_website</option>
+            <option value="no_phone">no_phone</option>
+            <option value="no_hours">no_hours</option>
+            <option value="weak_profile">weak_profile</option>
+          </select>
+          <button class="btn btn-small" id="refreshLeadsBtn" type="button">Rafraichir</button>
+        </div>
+
+        <div class="job-meta" id="jobMeta">Selectionnez un job pour afficher les leads.</div>
+
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:24%">Structure</th>
+                <th style="width:9%">Priorite</th>
+                <th style="width:8%">Score</th>
+                <th style="width:13%">Telephone</th>
+                <th style="width:15%">Email / Site</th>
+                <th style="width:14%">Failles</th>
+                <th style="width:17%">CRM</th>
+              </tr>
+            </thead>
+            <tbody id="tbody">
+              <tr><td colspan="7"><div class="empty-state">Aucun lead pour le moment.</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="detail-rail band section-block">
+        <div class="section-head">
+          <div>
+            <h2>Fiche lead</h2>
+            <p>Selectionnez une ligne pour voir le detail.</p>
+          </div>
+        </div>
+
+        <div class="detail-empty" id="leadEmpty">Aucun lead selectionne.</div>
+
+        <div class="detail-card hidden" id="leadDetail">
+          <div class="detail-top">
+            <div>
+              <h3 id="detailName">-</h3>
+              <p id="detailAddress">-</p>
+            </div>
+            <span class="pill" id="detailPriority">-</span>
+          </div>
+
+          <dl class="detail-grid">
+            <div>
+              <dt>Telephone</dt>
+              <dd class="mono" id="detailPhone">-</dd>
+            </div>
+            <div>
+              <dt>Email</dt>
+              <dd class="mono" id="detailEmail">-</dd>
+            </div>
+            <div>
+              <dt>Site web</dt>
+              <dd id="detailWebsite">-</dd>
+            </div>
+            <div>
+              <dt>Statut CRM</dt>
+              <dd id="detailStatus">-</dd>
+            </div>
+          </dl>
+
+          <div>
+            <span class="detail-label">Tags</span>
+            <div class="tag-list" id="detailTags"></div>
+          </div>
+
+          <div>
+            <span class="detail-label">Script DM</span>
+            <div class="script-box" id="detailScript">-</div>
+          </div>
+
+          <div>
+            <span class="detail-label">Note CRM</span>
+            <div class="crm-note" id="detailNote">Pas de note.</div>
+          </div>
+
+          <div class="detail-actions">
+            <button class="btn btn-soft" id="copyScriptBtn" type="button">Copier le script</button>
+            <button class="btn" id="markContactedBtn" type="button">Passer en contacted</button>
+            <button class="btn" id="markClosedBtn" type="button">Passer en closed</button>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

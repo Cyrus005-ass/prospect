@@ -6,6 +6,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
+COPY templates ./templates
+COPY static ./static
 RUN mkdir -p /app/data
 
 EXPOSE 8000

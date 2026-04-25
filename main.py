@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import csv
 import hashlib
@@ -6,23 +6,31 @@ import os
 import re
 import sqlite3
 import threading
+import unicodedata
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote, quote_plus, urljoin
 
 import pandas as pd
 import requests
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="ProspectHunter", version="5.1.0")
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_FILE = DATA_DIR / "prospect.db"
+STATIC_DIR = Path("static")
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+TEMPLATE_DIR = Path("templates")
+TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 GOOGLE_TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
@@ -31,7 +39,69 @@ UA = {"User-Agent": "ProspectHunter/5.1 (contact: admin@example.com)"}
 DEFAULT_API_KEY = os.getenv("PROSPECT_API_KEY", "dev-key-change-me")
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 VALID_CRM_STATUSES = {"new", "contacted", "replied", "closed", "ignored"}
+VALID_WEAKNESS_FILTERS = {"all", "no_website", "no_phone", "no_hours", "weak_profile"}
+VALID_PRIORITIES = {"HOT", "WARM", "COLD"}
 RUN_LOCK = threading.Lock()
+
+COUNTRY_ALIAS_MAP = {
+    "benin": "BJ",
+    "france": "FR",
+    "usa": "US",
+    "us": "US",
+    "u.s.a": "US",
+    "united states": "US",
+    "united states of america": "US",
+    "etats unis": "US",
+    "etats-unis": "US",
+    "etatsunis": "US",
+    "canada": "CA",
+    "mexique": "MX",
+    "mexico": "MX",
+    "bresil": "BR",
+    "brazil": "BR",
+    "argentine": "AR",
+    "argentina": "AR",
+    "colombie": "CO",
+    "colombia": "CO",
+    "cote d ivoire": "CI",
+    "cote d'ivoire": "CI",
+    "ivory coast": "CI",
+    "senegal": "SN",
+    "cameroun": "CM",
+    "cameroon": "CM",
+    "nigeria": "NG",
+    "ghana": "GH",
+    "togo": "TG",
+    "espagne": "ES",
+    "spain": "ES",
+    "italie": "IT",
+    "italy": "IT",
+    "allemagne": "DE",
+    "germany": "DE",
+    "royaume uni": "GB",
+    "royaume-uni": "GB",
+    "uk": "GB",
+    "u.k.": "GB",
+    "united kingdom": "GB",
+    "belgique": "BE",
+    "belgium": "BE",
+    "portugal": "PT",
+    "pays bas": "NL",
+    "pays-bas": "NL",
+    "netherlands": "NL",
+    "suisse": "CH",
+    "switzerland": "CH",
+}
+
+SECTOR_OSM_RULES = {
+    "restaurant": ['nwr["amenity"~"restaurant|fast_food|cafe",i](area.city);'],
+    "hotel": ['nwr["tourism"="hotel"](area.city);'],
+    "coiffeur": ['nwr["shop"="hairdresser"](area.city);'],
+    "garage": ['nwr["shop"="car_repair"](area.city);'],
+    "pharmacie": ['nwr["amenity"="pharmacy"](area.city);'],
+}
+
+COUNTRY_CACHE: dict[str, tuple[str, int]] = {}
 
 DM_TEMPLATES = {
     "restaurant": {
@@ -251,22 +321,103 @@ def lead_id_for(name: str, phone: str, address: str) -> str:
     return hashlib.sha1(raw).hexdigest()[:12]
 
 
-def overpass_fetch(query: str, city: str, limit: int) -> list[dict[str, Any]]:
-    esc_query = re.sub(r'"', r'\\"', query)
-    esc_city = re.sub(r'"', r'\\"', city)
+def normalize_country_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode("ascii")
+    normalized = re.sub(r"[^a-zA-Z0-9]+", " ", normalized).strip().lower()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def resolve_country_iso2(country: str) -> str:
+    raw = (country or "").strip()
+    if not raw:
+        raise ValueError("Donne-moi : 1. Pays 2. Ville 3. Secteur d'activite. Exemple : BJ, Cotonou, restaurant")
+    if re.fullmatch(r"[A-Za-z]{2}", raw):
+        return raw.upper()
+
+    key = normalize_country_key(raw)
+    if key in COUNTRY_ALIAS_MAP:
+        return COUNTRY_ALIAS_MAP[key]
+
+    try:
+        response = requests.get(
+            f"https://restcountries.com/v3.1/name/{quote(raw)}",
+            params={"fields": "cca2,name"},
+            headers=UA,
+            timeout=25,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        raise ValueError(f"Impossible de convertir le pays '{raw}' en code ISO2") from exc
+
+    for item in payload:
+        common = normalize_country_key(str(item.get("name", {}).get("common", "")))
+        official = normalize_country_key(str(item.get("name", {}).get("official", "")))
+        if key in {common, official}:
+            return str(item.get("cca2", "")).upper()
+
+    first = payload[0].get("cca2", "") if payload else ""
+    if not first:
+        raise ValueError(f"Impossible de convertir le pays '{raw}' en code ISO2")
+    return str(first).upper()
+
+
+def country_area_id_for(country: str) -> tuple[str, int]:
+    iso2 = resolve_country_iso2(country)
+    cached = COUNTRY_CACHE.get(iso2)
+    if cached:
+        return cached
+
+    query = f"""
+[out:json][timeout:30];
+rel["boundary"="administrative"]["ISO3166-1"="{iso2}"];
+out ids;
+"""
+    response = requests.post(OVERPASS_URL, data=query.encode("utf-8"), headers=UA, timeout=60)
+    response.raise_for_status()
+    elements = response.json().get("elements", [])
+    relation = next((el for el in elements if el.get("type") == "relation" and isinstance(el.get("id"), int)), None)
+    if not relation:
+        raise ValueError(f"Impossible de recuperer l'area Overpass pour le pays {iso2}")
+
+    area_id = 3600000000 + int(relation["id"])
+    COUNTRY_CACHE[iso2] = (iso2, area_id)
+    return iso2, area_id
+
+
+def sector_overpass_filters(query: str) -> list[str]:
+    sector = normalize_country_key(query)
+    if sector in SECTOR_OSM_RULES:
+        return SECTOR_OSM_RULES[sector]
+
+    esc_query = re.sub(r'"', r'\\"', query.strip())
+    return [
+        f'nwr["name"~"{esc_query}",i]["shop"](area.city);',
+        f'nwr["name"~"{esc_query}",i]["office"](area.city);',
+        f'nwr["shop"~"{esc_query}",i](area.city);',
+        f'nwr["office"~"{esc_query}",i](area.city);',
+    ]
+
+
+def overpass_fetch(query: str, city: str, country: str, limit: int) -> list[dict[str, Any]]:
+    iso2, country_area_id = country_area_id_for(country)
+    esc_city = re.sub(r'"', r'\"', city)
+    clauses = "\n  ".join(sector_overpass_filters(query))
     q = f"""
 [out:json][timeout:60];
-area["name"="{esc_city}"]["boundary"="administrative"]->.searchArea;
+area({country_area_id})->.country;
+area["name"="{esc_city}"](area.country)->.city;
 (
-  nwr["name"~"{esc_query}",i](area.searchArea);
-  nwr["amenity"~"{esc_query}",i](area.searchArea);
-  nwr["shop"~"{esc_query}",i](area.searchArea);
+  {clauses}
 );
-out tags center {limit};
+out center tags {limit};
 """
     r = requests.post(OVERPASS_URL, data=q.encode("utf-8"), headers=UA, timeout=90)
     r.raise_for_status()
-    return r.json().get("elements", [])
+    elements = r.json().get("elements", [])
+    for element in elements:
+        element.setdefault("tags", {})["country_iso2"] = iso2
+    return elements
 
 
 
@@ -396,6 +547,8 @@ def to_lead(el: dict[str, Any], city: str, country: str, vertical: str) -> dict[
     name = tags.get("name", "N/A")
     phone = normalize_phone(tags.get("phone") or tags.get("contact:phone") or "")
     website = tags.get("website") or tags.get("contact:website") or ""
+    emails = _emails_from_website(website)
+    email = emails[0] if emails else ""
     addr_parts = [tags.get("addr:housenumber", ""), tags.get("addr:street", ""), tags.get("addr:suburb", ""), tags.get("addr:city", city)]
     address = " ".join([x for x in addr_parts if x]).strip()
     lat = el.get("lat") or el.get("center", {}).get("lat")
@@ -407,7 +560,7 @@ def to_lead(el: dict[str, Any], city: str, country: str, vertical: str) -> dict[
         "lead_id": lead_id_for(name, phone, address),
         "name": name,
         "phone": phone,
-        "email": "",
+        "email": email,
         "whatsapp_link": wa_link(phone),
         "website": website,
         "address": address,
@@ -479,6 +632,8 @@ def sort_leads(leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def filter_leads(leads: list[dict[str, Any]], weakness: str) -> list[dict[str, Any]]:
     weakness = (weakness or "all").strip().lower()
+    if weakness not in VALID_WEAKNESS_FILTERS:
+        raise ValueError("Filtre weakness invalide")
     out = [x for x in leads if len([t for t in x["tags"].split(",") if t]) >= 2] if weakness == "all" else [x for x in leads if weakness in x["tags"].split(",")]
     return sort_leads(out)
 
@@ -566,7 +721,7 @@ def run_job(job_id: str, owner_api_key: str, query: str, city: str, country: str
             raw = google_places_fetch(query, city, country, limit)
             leads = [google_to_lead(el, city, country, vertical) for el in raw]
         else:
-            raw = overpass_fetch(query, city, limit)
+            raw = overpass_fetch(query, city, country, limit)
             leads = [to_lead(el, city, country, vertical) for el in raw]
         leads = [x for x in leads if x["name"] != "N/A"]
         leads = dedup_leads(leads)
@@ -618,7 +773,7 @@ def dm_ab(name: str = Query("Business"), tags: str = Query("weak_profile"), vert
 def search(
     query: str = Query(..., min_length=2),
     city: str = Query(..., min_length=2),
-    country: str = Query(""),
+    country: str = Query(..., min_length=2),
     weakness: str = Query("all"),
     limit: int = Query(100, ge=10, le=500),
     vertical: str | None = Query(None),
@@ -630,17 +785,22 @@ def search(
     job_id = str(uuid.uuid4())
     v = infer_vertical(query, vertical)
     src = source.strip().lower()
+    w = weakness.strip().lower()
     if src not in {"overpass", "google_maps"}:
         raise HTTPException(status_code=400, detail="source doit etre overpass ou google_maps")
+    if w not in VALID_WEAKNESS_FILTERS:
+        raise HTTPException(status_code=400, detail="weakness doit etre all, no_website, no_phone, no_hours ou weak_profile")
+    if not country.strip():
+        raise HTTPException(status_code=400, detail="Donne-moi : 1. Pays 2. Ville 3. Secteur d'activite. Exemple : BJ, Cotonou, restaurant")
     if src == "google_maps" and not GOOGLE_MAPS_API_KEY:
         src = "overpass"
     with db_conn() as conn:
         conn.execute(
             "INSERT INTO jobs(job_id,owner_api_key,status,query,city,country,weakness,limit_n,vertical,source,created_utc) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
-            (job_id, owner, query, city, country, weakness, limit, v, src, now_utc()),
+            (job_id, owner, query, city, country, w, limit, v, src, now_utc()),
         )
-    threading.Thread(target=run_job, args=(job_id, owner, query, city, country, weakness, limit, v, src), daemon=True).start()
-    return {"ok": True, "job_id": job_id, "status": "queued", "vertical": v, "source": src}
+    threading.Thread(target=run_job, args=(job_id, owner, query, city, country, w, limit, v, src), daemon=True).start()
+    return {"ok": True, "job_id": job_id, "status": "queued", "vertical": v, "source": src, "weakness": w}
 
 
 @app.get("/jobs/{job_id}")
@@ -668,6 +828,12 @@ def job_leads(
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> dict[str, Any]:
     owner = auth_api_key(api_key, x_api_key)
+    clean_priority = priority.strip().upper() if priority else None
+    clean_status = status.strip().lower() if status else None
+    if clean_priority and clean_priority not in VALID_PRIORITIES:
+        raise HTTPException(status_code=400, detail="priority doit etre HOT, WARM ou COLD")
+    if clean_status and clean_status not in VALID_CRM_STATUSES:
+        raise HTTPException(status_code=400, detail="status doit etre new, contacted, replied, closed ou ignored")
     with db_conn() as conn:
         job = conn.execute("SELECT status,csv_path,xlsx_path FROM jobs WHERE job_id=? AND owner_api_key=?", (job_id, owner)).fetchone()
         if not job:
@@ -677,12 +843,12 @@ def job_leads(
 
         clauses = ["job_id=?", "owner_api_key=?"]
         args: list[Any] = [job_id, owner]
-        if priority:
+        if clean_priority:
             clauses.append("UPPER(priority)=?")
-            args.append(priority.strip().upper())
-        if status:
+            args.append(clean_priority)
+        if clean_status:
             clauses.append("LOWER(status)=?")
-            args.append(status.strip().lower())
+            args.append(clean_status)
         if tag:
             clauses.append("LOWER(tags) LIKE ?")
             args.append(f"%{tag.strip().lower()}%")
@@ -732,25 +898,39 @@ def crm_summary(api_key: str | None = Query(None), x_api_key: str | None = Heade
     return {"total": total, "counts": counts}
 
 
+@app.get('/jobs/{job_id}/export/{fmt}')
+def job_export(
+    job_id: str,
+    fmt: str,
+    api_key: str | None = Query(None),
+    x_api_key: str | None = Header(default=None, alias='X-API-Key'),
+) -> FileResponse:
+    owner = auth_api_key(api_key, x_api_key)
+    export_fmt = (fmt or '').strip().lower()
+    if export_fmt not in {'csv', 'xlsx'}:
+        raise HTTPException(status_code=400, detail='format doit etre csv ou xlsx')
+
+    with db_conn() as conn:
+        row = conn.execute(
+            'SELECT csv_path,xlsx_path FROM jobs WHERE job_id=? AND owner_api_key=?',
+            (job_id, owner),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail='job_id introuvable')
+
+    path_value = row['csv_path'] if export_fmt == 'csv' else row['xlsx_path']
+    if not path_value:
+        raise HTTPException(status_code=404, detail='export indisponible pour ce job')
+
+    file_path = Path(path_value)
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail='fichier export introuvable')
+
+    media_type = 'text/csv; charset=utf-8' if export_fmt == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    return FileResponse(path=file_path, media_type=media_type, filename=file_path.name)
+
+
 @app.get("/", response_class=HTMLResponse)
-def dashboard() -> str:
-    return """
-<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>ProspectHunter V5.1 - C-Y ASS</title>
-<style>body{font-family:Segoe UI,Arial,sans-serif;padding:16px;background:#0b1220;color:#e5e7eb}input,select,button{padding:8px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e5e7eb}.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.mono{font-family:Consolas,monospace}.muted{color:#94a3b8}table{width:100%;border-collapse:collapse}th,td{padding:8px;border-bottom:1px solid #1f2937}</style>
-</head><body>
-<h2>ProspectHunter V5.1</h2><div class='muted'>Signature: C-Y ASS</div>
-<div class='row'><input id='apikey' value='dev-key-change-me' placeholder='api_key' style='min-width:220px'><span class='muted'>Isolation multi-utilisateur via api_key</span></div>
-<div class='row'><input id='query' value='restaurant'><input id='city' value='Cotonou'><input id='country' value='Benin'><select id='source'><option value='overpass'>overpass</option><option value='google_maps'>google_maps</option></select><select id='weakness'><option value='all'>all</option><option value='no_website'>no_website</option><option value='no_phone'>no_phone</option><option value='no_hours'>no_hours</option><option value='weak_profile'>weak_profile</option></select><input id='limit' type='number' value='120'><button onclick='launch()'>Lancer Job</button></div>
-<div class='row'><span class='muted'>Job:</span><span id='jobid' class='mono'>-</span><span id='jobstate' class='muted'>Aucun</span></div>
-<div class='row'><button onclick='refreshLeads()'>Rafraichir</button><select id='fPriority'><option value=''>Priority all</option><option>HOT</option><option>WARM</option><option>COLD</option></select><select id='fStatus'><option value=''>Status all</option><option>new</option><option>contacted</option><option>replied</option><option>closed</option><option>ignored</option></select><select id='fTag'><option value=''>Tag all</option><option>no_website</option><option>no_phone</option><option>no_hours</option><option>weak_profile</option></select></div>
-<table><thead><tr><th>Name</th><th>Priority</th><th>Score</th><th>Status</th><th>Tags</th><th>Phone</th><th>Email</th><th>CRM</th></tr></thead><tbody id='tbody'><tr><td colspan='8' class='muted'>Aucun lead</td></tr></tbody></table>
-<script>
-let currentJob=null,timer=null; const esc=v=>(v||'').toString().replace(/[&<>\"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[m]));
-const auth=path=>`${path}${path.includes('?')?'&':'?'}api_key=${encodeURIComponent(document.getElementById('apikey').value||'')}`;
-async function launch(){const q=query.value,cityv=city.value,countryv=country.value,src=source.value,w=weakness.value,l=limit.value;const r=await fetch(auth(`/search?query=${encodeURIComponent(q)}&city=${encodeURIComponent(cityv)}&country=${encodeURIComponent(countryv)}&source=${encodeURIComponent(src)}&weakness=${encodeURIComponent(w)}&limit=${encodeURIComponent(l)}`));const j=await r.json();if(!r.ok){alert(j.detail||'Erreur');return;}currentJob=j.job_id;jobid.textContent=currentJob;jobstate.textContent=`${j.status} (${j.source})`;poll();}
-async function poll(){if(!currentJob)return;const r=await fetch(auth(`/jobs/${currentJob}`));const j=await r.json();if(!r.ok){jobstate.textContent=j.detail||'Erreur';return;}jobstate.textContent=`Etat: ${j.status}`;if(j.status==='done'){await refreshLeads();return;}if(j.status==='failed'){jobstate.textContent=`Erreur: ${j.error||'unknown'}`;return;}timer=setTimeout(poll,1500);}
-async function refreshLeads(){if(!currentJob)return;const qs=new URLSearchParams({limit:'500',offset:'0'});if(fPriority.value)qs.set('priority',fPriority.value);if(fStatus.value)qs.set('status',fStatus.value);if(fTag.value)qs.set('tag',fTag.value);const r=await fetch(auth(`/jobs/${currentJob}/leads?${qs.toString()}`));const j=await r.json();if(!r.ok){alert(j.detail||'Erreur');return;}tbody.innerHTML=(j.leads||[]).map(l=>`<tr><td><b>${esc(l.name)}</b><div class='mono muted'>${esc(l.lead_id)}</div></td><td>${esc(l.priority)}</td><td>${esc(l.score)}</td><td>${esc(l.status)}</td><td class='mono'>${esc(l.tags)}</td><td class='mono'>${esc(l.phone||'-')}</td><td class='mono'>${esc(l.email||'-')}</td><td><button onclick="setStatus('${esc(l.lead_id)}','contacted')">contacted</button> <button onclick="setStatus('${esc(l.lead_id)}','closed')">closed</button></td></tr>`).join('')||"<tr><td colspan='8' class='muted'>Aucun lead</td></tr>";}
-async function setStatus(leadId,status){const note=prompt('Note CRM (optionnel):','')||'';const qs=new URLSearchParams({lead_id:leadId,status:status,note:note});const r=await fetch(auth(`/crm/update?${qs.toString()}`));const j=await r.json();if(!j.ok){alert('Erreur CRM');return;}refreshLeads();}
-</script></body></html>
-"""
+def dashboard() -> HTMLResponse:
+    html = (TEMPLATE_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(html)

@@ -1,4 +1,4 @@
-﻿# ProspectHunter (C-Y ASS)
+# ProspectHunter (C-Y ASS)
 
 ProspectHunter est une API FastAPI de prospection locale B2B.
 Signature produit: `C-Y ASS`.
@@ -9,6 +9,13 @@ Signature produit: `C-Y ASS`.
 - Recuperation des contacts dispo: telephone + email (si trouve sur le site web de l'etablissement)
 - Export CSV/XLSX
 - Mini CRM multi-utilisateur via `api_key`
+- Interface web fullstack deployable via `GET /`
+
+## Structure web
+- `main.py` : API FastAPI + routage du dashboard
+- `templates/index.html` : interface principale
+- `static/app.css` : theme et layout
+- `static/app.js` : chargement jobs/leads, filtres, exports et CRM
 
 ## API rapide
 - `GET /health`
@@ -38,22 +45,19 @@ set GOOGLE_MAPS_API_KEY=votre-cle-api-google  # optionnel
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+Puis ouvre `http://127.0.0.1:8000`.
+
 ## Mise en ligne (site web)
 
-### Option 1: Render
-1. Push du repo sur GitHub.
-2. Sur Render: New + Blueprint, selectionne `render.yaml`.
-3. Ajoute `PROSPECT_API_KEY` (obligatoire).
-4. `GOOGLE_MAPS_API_KEY` est optionnelle (seulement pour `source=google_maps`).
-5. Deploy.
-
-### Option 2: Railway
+### Option 1: Railway
 1. Push du repo sur GitHub.
 2. New Project + Deploy from GitHub.
 3. Railway utilise `railway.json`.
-4. Ajoute les variables d'environnement.
+4. Ajoute les variables d'environnement (`PROSPECT_API_KEY` obligatoire, `GOOGLE_MAPS_API_KEY` optionnelle).
 
-### Option 3: Docker
+Note: la base SQLite est stockee dans `data/`. Sur Railway, ce stockage reste local au conteneur et peut etre perdu lors d'un redeploiement ou restart. Pour un CRM durable en production, prevoir ensuite un stockage persistant ou une base externe.
+
+### Option 2: Docker
 ```bash
 docker compose up --build -d
 ```
